@@ -16,6 +16,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "0.0.0.0:8080", "the address where the api is responding to grpc requests")
+	odao := flag.Bool("odao", false, "pass this to get the list of odao nodes")
 	flag.Parse()
 
 	conn, err := grpc.Dial(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -30,14 +31,28 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	r, err := c.GetRocketPoolNodes(ctx, &pb.RocketPoolNodesRequest{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-		return
-	}
 
-	nodeIds := r.GetNodeIds()
+	var nodeIds [][]byte
+
+	if *odao {
+		r, err := c.GetOdaoNodes(ctx, &pb.OdaoNodesRequest{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+			return
+		}
+
+		nodeIds = r.GetNodeIds()
+	} else {
+		r, err := c.GetRocketPoolNodes(ctx, &pb.RocketPoolNodesRequest{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+			return
+		}
+
+		nodeIds = r.GetNodeIds()
+	}
 	out := make([]string, 0, len(nodeIds))
 
 	for _, addr := range nodeIds {

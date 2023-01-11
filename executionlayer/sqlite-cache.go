@@ -23,6 +23,9 @@ type SqliteCache struct {
 	setNodeStmt         *sql.Stmt
 	setHighestBlockStmt *sql.Stmt
 	forEachNodeStmt     *sql.Stmt
+	addOdaoNodeStmt     *sql.Stmt
+	delOdaoNodeStmt     *sql.Stmt
+	forEachOdaoNodeStmt *sql.Stmt
 
 	// Track the highest block in memory and save to db before serializing
 	highestBlock *big.Int
@@ -66,6 +69,21 @@ func (s *SqliteCache) prepareStatements() error {
 		return err
 	}
 
+	s.addOdaoNodeStmt, err = s.db.Prepare("INSERT OR REPLACE INTO odao_nodes(address) VALUES ( ?);")
+	if err != nil {
+		return err
+	}
+
+	s.delOdaoNodeStmt, err = s.db.Prepare("DELETE FROM odao_nodes WHERE address = ( ?);")
+	if err != nil {
+		return err
+	}
+
+	s.forEachOdaoNodeStmt, err = s.db.Prepare("SELECT address FROM odao_nodes;")
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -89,6 +107,11 @@ func (s *SqliteCache) createTables() error {
 			value INTEGER(8)
 		);`
 
+	const odaoNodes string = `
+		CREATE TABLE IF NOT EXISTS odao_nodes (
+			address BLOB PRIMARY KEY
+		);`
+
 	if _, err := s.db.Exec(nodes); err != nil {
 		return err
 	}
@@ -98,6 +121,10 @@ func (s *SqliteCache) createTables() error {
 	}
 
 	if _, err := s.db.Exec(highestBlock); err != nil {
+		return err
+	}
+
+	if _, err := s.db.Exec(odaoNodes); err != nil {
 		return err
 	}
 
@@ -410,6 +437,66 @@ func (s *SqliteCache) forEachNode(closure ForEachNodeClosure) error {
 	return tx.Commit()
 }
 
+func (s *SqliteCache) addOdaoNode(nodeAddr common.Address) error {
+
+	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: false, Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	_, err = tx.Stmt(s.addOdaoNodeStmt).Exec(nodeAddr.Bytes())
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *SqliteCache) removeOdaoNode(nodeAddr common.Address) error {
+
+	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: false, Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	_, err = tx.Stmt(s.delOdaoNodeStmt).Exec(nodeAddr.Bytes())
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *SqliteCache) forEachOdaoNode(closure ForEachNodeClosure) error {
+	var address []byte
+
+	tx, err := s.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	rows, err := tx.Stmt(s.forEachOdaoNodeStmt).Query()
+	if err != nil {
+		return err
+	}
+
+	for rows.Next() {
+		err = rows.Scan(&address)
+		if err != nil {
+			return err
+		}
+
+		if !closure(common.BytesToAddress(address)) {
+			break
+		}
+	}
+
+	return tx.Commit()
+}
+
 func (s *SqliteCache) setHighestBlock(block *big.Int) {
 	if s.highestBlock.Cmp(block) >= 0 {
 		return
@@ -439,6 +526,11 @@ func (s *SqliteCache) reset() error {
 	}
 
 	_, err = s.db.Exec("DELETE FROM highest_block;")
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec("DELETE FROM odao_nodes;")
 	if err != nil {
 		return err
 	}
@@ -480,6 +572,9 @@ func (s *SqliteCache) deinit() error {
 	s.setNodeStmt.Close()
 	s.setHighestBlockStmt.Close()
 	s.forEachNodeStmt.Close()
+	s.addOdaoNodeStmt.Close()
+	s.delOdaoNodeStmt.Close()
+	s.forEachOdaoNodeStmt.Close()
 	s.db.Close()
 	return nil
 }

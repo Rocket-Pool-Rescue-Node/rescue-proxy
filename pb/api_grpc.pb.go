@@ -23,6 +23,7 @@ const _ = grpc.SupportPackageIsVersion7
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ApiClient interface {
 	GetRocketPoolNodes(ctx context.Context, in *RocketPoolNodesRequest, opts ...grpc.CallOption) (*RocketPoolNodes, error)
+	GetOdaoNodes(ctx context.Context, in *OdaoNodesRequest, opts ...grpc.CallOption) (*OdaoNodes, error)
 }
 
 type apiClient struct {
@@ -42,11 +43,21 @@ func (c *apiClient) GetRocketPoolNodes(ctx context.Context, in *RocketPoolNodesR
 	return out, nil
 }
 
+func (c *apiClient) GetOdaoNodes(ctx context.Context, in *OdaoNodesRequest, opts ...grpc.CallOption) (*OdaoNodes, error) {
+	out := new(OdaoNodes)
+	err := c.cc.Invoke(ctx, "/pb.Api/GetOdaoNodes", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ApiServer is the server API for Api service.
 // All implementations must embed UnimplementedApiServer
 // for forward compatibility
 type ApiServer interface {
 	GetRocketPoolNodes(context.Context, *RocketPoolNodesRequest) (*RocketPoolNodes, error)
+	GetOdaoNodes(context.Context, *OdaoNodesRequest) (*OdaoNodes, error)
 	mustEmbedUnimplementedApiServer()
 }
 
@@ -56,6 +67,9 @@ type UnimplementedApiServer struct {
 
 func (UnimplementedApiServer) GetRocketPoolNodes(context.Context, *RocketPoolNodesRequest) (*RocketPoolNodes, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetRocketPoolNodes not implemented")
+}
+func (UnimplementedApiServer) GetOdaoNodes(context.Context, *OdaoNodesRequest) (*OdaoNodes, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOdaoNodes not implemented")
 }
 func (UnimplementedApiServer) mustEmbedUnimplementedApiServer() {}
 
@@ -88,6 +102,24 @@ func _Api_GetRocketPoolNodes_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Api_GetOdaoNodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OdaoNodesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ApiServer).GetOdaoNodes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/pb.Api/GetOdaoNodes",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ApiServer).GetOdaoNodes(ctx, req.(*OdaoNodesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Api_ServiceDesc is the grpc.ServiceDesc for Api service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -98,6 +130,10 @@ var Api_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRocketPoolNodes",
 			Handler:    _Api_GetRocketPoolNodes_Handler,
+		},
+		{
+			MethodName: "GetOdaoNodes",
+			Handler:    _Api_GetOdaoNodes_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

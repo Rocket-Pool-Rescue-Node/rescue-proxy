@@ -51,6 +51,24 @@ func (a *API) GetRocketPoolNodes(ctx context.Context, request *pb.RocketPoolNode
 	return out, nil
 }
 
+func (a *API) GetOdaoNodes(ctx context.Context, request *pb.OdaoNodesRequest) (*pb.OdaoNodes, error) {
+	out := &pb.OdaoNodes{}
+	out.NodeIds = make([][]byte, 0, 8)
+
+	err := a.EL.ForEachOdaoNode(func(addr common.Address) bool {
+		out.NodeIds = append(out.NodeIds, addr.Bytes())
+		return true
+	})
+
+	if err != nil {
+		a.m.Counter("get_odao_nodes_error").Inc()
+		return nil, err
+	}
+
+	a.m.Counter("get_odao_nodes_ok").Inc()
+	return out, nil
+}
+
 func (a *API) Init() error {
 	var err error
 

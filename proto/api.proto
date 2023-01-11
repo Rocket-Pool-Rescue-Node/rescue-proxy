@@ -7,6 +7,7 @@ option go_package = "./pb";
 service Api {
 
 	rpc GetRocketPoolNodes (RocketPoolNodesRequest) returns (RocketPoolNodes) {}
+	rpc GetOdaoNodes (OdaoNodesRequest) returns (OdaoNodes) {}
 }
 
 message RocketPoolNodesRequest {
@@ -14,5 +15,13 @@ message RocketPoolNodesRequest {
 }
 
 message RocketPoolNodes {
+	repeated bytes node_ids = 1;
+}
+
+message OdaoNodesRequest {
+
+}
+
+message OdaoNodes {
 	repeated bytes node_ids = 1;
 }

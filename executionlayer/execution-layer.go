@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/rocket-pool/rocketpool-go/dao/trustednode"
 	"github.com/rocket-pool/rocketpool-go/minipool"
 	"github.com/rocket-pool/rocketpool-go/node"
 	"github.com/rocket-pool/rocketpool-go/rocketpool"
@@ -47,15 +48,19 @@ type ExecutionLayer struct {
 
 	// Smart contracts we either read from or need the address of
 
-	rocketNodeManager     *rocketpool.Contract
-	rocketMinipoolManager *rocketpool.Contract
-	smoothingPool         *rocketpool.Contract
+	rocketNodeManager           *rocketpool.Contract
+	rocketMinipoolManager       *rocketpool.Contract
+	smoothingPool               *rocketpool.Contract
+	rocketDaoNodeTrustedActions *rocketpool.Contract
 
 	// The "topics" of the events we subscribe to
 
 	nodeRegisteredTopic             common.Hash
 	smoothingPoolStatusChangedTopic common.Hash
 	minipoolLaunchedTopic           common.Hash
+	odaoJoinedTopic                 common.Hash
+	odaoLeftTopic                   common.Hash
+	odaoKickedTopic                 common.Hash
 
 	// The "topics" and contract filter for the events we subscribe to
 	query ethereum.FilterQuery
@@ -199,6 +204,33 @@ func (e *ExecutionLayer) handleMinipoolEvent(event types.Log) {
 	e.logger.Debug("Added new minipool", zap.String("pubkey", minipoolDetails.Pubkey.String()), zap.String("node", nodeAddr.String()))
 }
 
+func (e *ExecutionLayer) handleOdaoEvent(event types.Log) {
+
+	if bytes.Equal(event.Topics[0].Bytes(), e.odaoJoinedTopic.Bytes()) {
+		addr := common.BytesToAddress(event.Topics[1].Bytes())
+
+		err := e.cache.addOdaoNode(addr)
+		if err != nil {
+			e.logger.Warn("Error updating odao cache", zap.Error(err))
+		}
+		return
+	}
+
+	if bytes.Equal(event.Topics[0].Bytes(), e.odaoLeftTopic.Bytes()) ||
+		bytes.Equal(event.Topics[0].Bytes(), e.odaoKickedTopic.Bytes()) {
+
+		addr := common.BytesToAddress(event.Topics[1].Bytes())
+
+		err := e.cache.removeOdaoNode(addr)
+		if err != nil {
+			e.logger.Warn("Error updating odao cache", zap.Error(err))
+		}
+		return
+	}
+
+	e.logger.Warn("Event with unknown topic received", zap.String("string", event.Topics[0].String()))
+}
+
 func (e *ExecutionLayer) handleEvent(event types.Log) {
 	// events from the rocketNodeManager contract
 	e.m.Counter("subscription_event_received").Inc()
@@ -210,6 +242,12 @@ func (e *ExecutionLayer) handleEvent(event types.Log) {
 	// events from the rocketMinipoolManager contract
 	if bytes.Equal(e.rocketMinipoolManager.Address[:], event.Address[:]) {
 		e.handleMinipoolEvent(event)
+		goto out
+	}
+
+	// events from the rocketDAONodeTrustedActions contract
+	if bytes.Equal(e.rocketDaoNodeTrustedActions.Address[:], event.Address[:]) {
+		e.handleOdaoEvent(event)
 		goto out
 	}
 
@@ -251,8 +289,14 @@ func (e *ExecutionLayer) backfillEvents() error {
 		// The current block is actually the last block processed by the EC, so play any events from it as well
 		// The range is inclusive
 		ToBlock: stop,
-		// And we only care about 3 event types
-		Topics: [][]common.Hash{[]common.Hash{e.nodeRegisteredTopic, e.smoothingPoolStatusChangedTopic, e.minipoolLaunchedTopic}},
+		Topics: [][]common.Hash{[]common.Hash{
+			e.nodeRegisteredTopic,
+			e.smoothingPoolStatusChangedTopic,
+			e.minipoolLaunchedTopic,
+			e.odaoJoinedTopic,
+			e.odaoLeftTopic,
+			e.odaoKickedTopic,
+		}},
 	})
 
 	if err != nil {
@@ -334,10 +378,21 @@ func (e *ExecutionLayer) ecEventsConnect(opts *bind.CallOpts) error {
 	e.nodeRegisteredTopic = crypto.Keccak256Hash([]byte("NodeRegistered(address,uint256)"))
 	e.smoothingPoolStatusChangedTopic = crypto.Keccak256Hash([]byte("NodeSmoothingPoolStateChanged(address,bool)"))
 	e.minipoolLaunchedTopic = crypto.Keccak256Hash([]byte("MinipoolCreated(address,address,uint256)"))
+	e.odaoJoinedTopic = crypto.Keccak256Hash([]byte("ActionJoined(address,uint256,uint256)"))
+	e.odaoLeftTopic = crypto.Keccak256Hash([]byte("ActionLeave(address,uint256,uint256)"))
+	e.odaoKickedTopic = crypto.Keccak256Hash([]byte("ActionKick(address,uint256,uint256)"))
+
 	// Subscribe to events from rocketNodeManager and rocketMinipoolManager
 	e.query = ethereum.FilterQuery{
 		Addresses: []common.Address{*e.rocketMinipoolManager.Address, *e.rocketNodeManager.Address},
-		Topics:    [][]common.Hash{[]common.Hash{e.nodeRegisteredTopic, e.smoothingPoolStatusChangedTopic, e.minipoolLaunchedTopic}},
+		Topics: [][]common.Hash{[]common.Hash{
+			e.nodeRegisteredTopic,
+			e.smoothingPoolStatusChangedTopic,
+			e.minipoolLaunchedTopic,
+			e.odaoJoinedTopic,
+			e.odaoLeftTopic,
+			e.odaoKickedTopic,
+		}},
 	}
 
 	// Set highestBlock to the cache's highestBlock, since it was either loaded or warmed up already
@@ -483,6 +538,11 @@ func (e *ExecutionLayer) Init() error {
 		return err
 	}
 
+	e.rocketDaoNodeTrustedActions, err = e.rp.GetContract("rocketDAONodeTrustedActions", opts)
+	if err != nil {
+		return err
+	}
+
 	// If the cache is warm, skip the slow path
 	if cacheBlock.Cmp(big.NewInt(0)) != 0 {
 		// Update opts to indicate that we need to backfill from after
@@ -535,7 +595,28 @@ func (e *ExecutionLayer) Init() error {
 			}
 		}
 	}
-	e.logger.Debug("Pre-loaded nodes and minipools", zap.Int("nodes", len(nodes)), zap.Int("minipools", minipoolCount))
+
+	// Get all odao nodes at the given block
+	odaoNodes, err := trustednode.GetMembers(e.rp, opts)
+	if err != nil {
+		return err
+	}
+
+	for _, member := range odaoNodes {
+		if !member.Exists {
+			continue
+		}
+
+		err = e.cache.addOdaoNode(member.Address)
+		if err != nil {
+			return err
+		}
+	}
+	e.logger.Debug("Found odao nodes to preload", zap.Int("count", len(odaoNodes)), zap.Int64("block", opts.BlockNumber.Int64()))
+	e.logger.Debug("Pre-loaded nodes and minipools",
+		zap.Int("nodes", len(nodes)),
+		zap.Int("minipools", minipoolCount),
+		zap.Int("odao nodes", len(odaoNodes)))
 
 	// Listen for updates
 	return e.ecEventsConnect(opts)
@@ -560,6 +641,11 @@ func (e *ExecutionLayer) Deinit() {
 // ForEachNode calls the provided closure with the address of every rocket pool node the ExecutionLayer has observed
 func (e *ExecutionLayer) ForEachNode(closure ForEachNodeClosure) error {
 	return e.cache.forEachNode(closure)
+}
+
+// ForEachOdaoNode calls the provided closure with the address of every odao node the ExecutionLayer has observed
+func (e *ExecutionLayer) ForEachOdaoNode(closure ForEachNodeClosure) error {
+	return e.cache.forEachOdaoNode(closure)
 }
 
 // ValidatorFeeRecipient returns the expected fee recipient for a validator, or nil if the validator is "unknown"

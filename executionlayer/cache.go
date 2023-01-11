@@ -22,6 +22,9 @@ type Cache interface {
 	getNodeInfo(common.Address) (*nodeInfo, error)
 	addNodeInfo(common.Address, *nodeInfo) error
 	forEachNode(ForEachNodeClosure) error
+	addOdaoNode(common.Address) error
+	removeOdaoNode(common.Address) error
+	forEachOdaoNode(ForEachNodeClosure) error
 	setHighestBlock(*big.Int)
 	getHighestBlock() *big.Int
 	deinit() error

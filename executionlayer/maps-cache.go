@@ -26,6 +26,10 @@ type MapsCache struct {
 	// Ergo, this is a map of node address -> *Node
 	nodeIndex *sync.Map
 
+	// We store oDAO nodes for the api. We need to be able to remove them if they're
+	// kicked or leave, so this is a map of address -> bool
+	odaoNodeIndex *sync.Map
+
 	// We need to detect gaps in the event stream when there are connection issues, and
 	// backfill missing data, so we keep track of the highest block for which we received
 	// an event here.
@@ -36,6 +40,7 @@ func (m *MapsCache) init() error {
 
 	m.minipoolIndex = &sync.Map{}
 	m.nodeIndex = &sync.Map{}
+	m.odaoNodeIndex = &sync.Map{}
 	m.highestBlock = big.NewInt(0)
 	return nil
 }
@@ -84,6 +89,30 @@ func (m *MapsCache) addNodeInfo(nodeAddr common.Address, node *nodeInfo) error {
 
 func (m *MapsCache) forEachNode(closure ForEachNodeClosure) error {
 	m.nodeIndex.Range(func(k any, value any) bool {
+		return closure(k.(common.Address))
+	})
+
+	return nil
+}
+
+func (m *MapsCache) addOdaoNode(addr common.Address) error {
+
+	m.odaoNodeIndex.Store(addr, true)
+	return nil
+}
+
+func (m *MapsCache) removeOdaoNode(addr common.Address) error {
+
+	m.odaoNodeIndex.Store(addr, false)
+	return nil
+}
+
+func (m *MapsCache) forEachOdaoNode(closure ForEachNodeClosure) error {
+	m.odaoNodeIndex.Range(func(k any, value any) bool {
+		if !value.(bool) {
+			return true
+		}
+
 		return closure(k.(common.Address))
 	})
 
